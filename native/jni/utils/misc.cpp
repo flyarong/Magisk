@@ -13,9 +13,11 @@
 #include <unistd.h>
 #include <syscall.h>
 #include <random>
+#include <string>
 
-#include <logging.h>
-#include <utils.h>
+#include <utils.hpp>
+
+using namespace std;
 
 int fork_dont_care() {
 	int pid = xfork();
@@ -46,7 +48,7 @@ constexpr char ALPHANUM[] = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXY
 static bool seeded = false;
 static std::mt19937 gen;
 static std::uniform_int_distribution<int> dist(0, sizeof(ALPHANUM) - 2);
-void gen_rand_str(char *buf, int len, bool varlen) {
+int gen_rand_str(char *buf, int len, bool varlen) {
 	if (!seeded) {
 		if (access("/dev/urandom", F_OK) != 0)
 			mknod("/dev/urandom", 0600 | S_IFCHR, makedev(1, 9));
@@ -64,6 +66,7 @@ void gen_rand_str(char *buf, int len, bool varlen) {
 	for (int i = 0; i < len - 1; ++i)
 		buf[i] = ALPHANUM[dist(gen)];
 	buf[len - 1] = '\0';
+	return len - 1;
 }
 
 int strend(const char *s1, const char *s2) {
@@ -73,7 +76,8 @@ int strend(const char *s1, const char *s2) {
 }
 
 int exec_command(exec_t &exec) {
-	int pipefd[2] = {-1, -1}, outfd = -1;
+	int pipefd[] = {-1, -1};
+	int outfd = -1;
 
 	if (exec.fd == -1) {
 		if (xpipe2(pipefd, O_CLOEXEC) == -1)
@@ -113,17 +117,17 @@ int exec_command(exec_t &exec) {
 }
 
 int exec_command_sync(exec_t &exec) {
-	int pid, status;
-	pid = exec_command(exec);
+	int pid = exec_command(exec);
 	if (pid < 0)
 		return -1;
+	int status;
 	waitpid(pid, &status, 0);
 	return WEXITSTATUS(status);
 }
 
-int new_daemon_thread(void *(*start_routine) (void *), void *arg, const pthread_attr_t *attr) {
+int new_daemon_thread(thread_entry entry, void *arg, const pthread_attr_t *attr) {
 	pthread_t thread;
-	int ret = xpthread_create(&thread, attr, start_routine, arg);
+	int ret = xpthread_create(&thread, attr, entry, arg);
 	if (ret == 0)
 		pthread_detach(thread);
 	return ret;
@@ -136,8 +140,8 @@ static void *proxy_routine(void *fp) {
 	return nullptr;
 }
 
-int new_daemon_thread(std::function<void()> &&fn) {
-	return new_daemon_thread(proxy_routine, new std::function<void()>(std::move(fn)));
+int new_daemon_thread(std::function<void()> &&entry) {
+	return new_daemon_thread(proxy_routine, new std::function<void()>(std::move(entry)));
 }
 
 static char *argv0;
@@ -157,14 +161,6 @@ bool ends_with(const std::string_view &s1, const std::string_view &s2) {
 	unsigned l1 = s1.length();
 	unsigned l2 = s2.length();
 	return l1 < l2 ? false : s1.compare(l1 - l2, l2, s2) == 0;
-}
-
-char *rtrim(char *str) {
-	int len = strlen(str);
-	while (len > 0 && str[len - 1] == ' ')
-		--len;
-	str[len] = '\0';
-	return str;
 }
 
 /*
@@ -197,4 +193,27 @@ uint32_t binary_gcd(uint32_t u, uint32_t v) {
 		v -= u;
 	} while (v != 0);
 	return u << shift;
+}
+
+int switch_mnt_ns(int pid) {
+	char mnt[32];
+	snprintf(mnt, sizeof(mnt), "/proc/%d/ns/mnt", pid);
+	if (access(mnt, R_OK) == -1) return 1; // Maybe process died..
+
+	int fd, ret;
+	fd = xopen(mnt, O_RDONLY);
+	if (fd < 0) return 1;
+	// Switch to its namespace
+	ret = xsetns(fd, 0);
+	close(fd);
+	return ret;
+}
+
+string &replace_all(string &str, string_view from, string_view to) {
+	size_t pos = 0;
+	while((pos = str.find(from, pos)) != string::npos) {
+		str.replace(pos, from.length(), to);
+		pos += to.length();
+	}
+	return str;
 }

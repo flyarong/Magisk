@@ -1,110 +1,126 @@
 package com.topjohnwu.magisk.ui.flash
 
-import android.Manifest.permission.READ_EXTERNAL_STORAGE
-import android.Manifest.permission.WRITE_EXTERNAL_STORAGE
 import android.content.res.Resources
 import android.net.Uri
-import android.os.Handler
-import androidx.core.os.postDelayed
-import androidx.databinding.ObservableArrayList
+import android.view.MenuItem
+import androidx.databinding.Bindable
+import androidx.lifecycle.viewModelScope
 import com.topjohnwu.magisk.BR
-import com.topjohnwu.magisk.Config
-import com.topjohnwu.magisk.Const
 import com.topjohnwu.magisk.R
-import com.topjohnwu.magisk.base.viewmodel.BaseViewModel
-import com.topjohnwu.magisk.databinding.ComparableRvItem
-import com.topjohnwu.magisk.extensions.*
-import com.topjohnwu.magisk.model.entity.recycler.ConsoleRvItem
+import com.topjohnwu.magisk.core.Config
+import com.topjohnwu.magisk.core.Const
+import com.topjohnwu.magisk.core.tasks.FlashZip
+import com.topjohnwu.magisk.core.tasks.MagiskInstaller
+import com.topjohnwu.magisk.core.view.Notifications
+import com.topjohnwu.magisk.ktx.*
+import com.topjohnwu.magisk.model.binding.BindingAdapter
+import com.topjohnwu.magisk.model.entity.recycler.ConsoleItem
 import com.topjohnwu.magisk.model.events.SnackbarEvent
-import com.topjohnwu.magisk.model.flash.FlashResultListener
-import com.topjohnwu.magisk.model.flash.Flashing
-import com.topjohnwu.magisk.model.flash.Patching
-import com.topjohnwu.magisk.utils.DiffObservableList
-import com.topjohnwu.magisk.utils.KObservableField
+import com.topjohnwu.magisk.ui.base.BaseViewModel
+import com.topjohnwu.magisk.ui.base.diffListOf
+import com.topjohnwu.magisk.ui.base.itemBindingOf
+import com.topjohnwu.magisk.utils.set
+import com.topjohnwu.superuser.CallbackList
 import com.topjohnwu.superuser.Shell
-import me.tatarka.bindingcollectionadapter2.ItemBinding
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.io.File
-import java.util.*
 
 class FlashViewModel(
-    action: String,
-    installer: Uri,
-    uri: Uri,
+    args: FlashFragmentArgs,
     private val resources: Resources
-) : BaseViewModel(), FlashResultListener {
+) : BaseViewModel() {
 
-    val canShowReboot = Shell.rootAccess()
-    val showRestartTitle = KObservableField(false)
+    @get:Bindable
+    var showReboot = Shell.rootAccess()
+        set(value) = set(value, field, { field = it }, BR.showReboot)
 
-    val behaviorText = KObservableField(resources.getString(R.string.flashing))
+    @get:Bindable
+    var behaviorText = resources.getString(R.string.flashing)
+        set(value) = set(value, field, { field = it }, BR.behaviorText)
 
-    val items = DiffObservableList(ComparableRvItem.callback)
-    val itemBinding = ItemBinding.of<ComparableRvItem<*>> { itemBinding, _, item ->
-        item.bind(itemBinding)
-        itemBinding.bindExtra(BR.viewModel, this@FlashViewModel)
+    val adapter = BindingAdapter<ConsoleItem>()
+    val items = diffListOf<ConsoleItem>()
+    val itemBinding = itemBindingOf<ConsoleItem>()
+
+    private val logItems = mutableListOf<String>().synchronized()
+    private val outItems = object : CallbackList<String>() {
+        override fun onAddElement(e: String?) {
+            e ?: return
+            items.add(ConsoleItem(e))
+            logItems.add(e)
+        }
     }
-
-    private val outItems = ObservableArrayList<String>()
-    private val logItems = Collections.synchronizedList(mutableListOf<String>())
 
     init {
-        outItems.sendUpdatesTo(items) { it.map { ConsoleRvItem(it) } }
-        outItems.copyNewInputInto(logItems)
-
-        state = State.LOADING
-
-        when (action) {
-            Const.Value.FLASH_ZIP -> Flashing
-                .Install(installer, outItems, logItems, this)
-                .exec()
-            Const.Value.UNINSTALL -> Flashing
-                .Uninstall(installer, outItems, logItems, this)
-                .exec()
-            Const.Value.FLASH_MAGISK -> Patching
-                .Direct(installer, outItems, logItems, this)
-                .exec()
-            Const.Value.FLASH_INACTIVE_SLOT -> Patching
-                .SecondSlot(installer, outItems, logItems, this)
-                .exec()
-            Const.Value.PATCH_FILE -> Patching
-                .File(installer, uri, outItems, logItems, this)
-                .exec()
+        args.dismissId.takeIf { it != -1 }?.also {
+            Notifications.mgr.cancel(it)
         }
+        val (installer, action, uri) = args
+        startFlashing(installer, uri, action)
     }
 
-    override fun onResult(isSuccess: Boolean) {
-        state = if (isSuccess) State.LOADED else State.LOADING_FAILED
-        behaviorText.value = when {
-            isSuccess -> resources.getString(R.string.done)
-            else -> resources.getString(R.string.failure)
-        }
-
-        if (isSuccess) {
-            Handler().postDelayed(500) {
-                showRestartTitle.value = true
-            }
-        }
-    }
-
-    fun savePressed() = withPermissions(READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE)
-        .map { now }
-        .map { it.toTime(timeFormatStandard) }
-        .map { Const.MAGISK_INSTALL_LOG_FILENAME.format(it) }
-        .map { File(Config.downloadDirectory, it) }
-        .map { file ->
-            file.bufferedWriter().use { writer ->
-                logItems.forEach {
-                    writer.write(it)
-                    writer.newLine()
+    private fun startFlashing(installer: Uri, uri: Uri?, action: String) {
+        viewModelScope.launch {
+            val result = when (action) {
+                Const.Value.FLASH_ZIP -> {
+                    FlashZip(installer, outItems, logItems).exec()
+                }
+                Const.Value.UNINSTALL -> {
+                    showReboot = false
+                    FlashZip.Uninstall(installer, outItems, logItems).exec()
+                }
+                Const.Value.FLASH_MAGISK -> {
+                    MagiskInstaller.Direct(installer, outItems, logItems).exec()
+                }
+                Const.Value.FLASH_INACTIVE_SLOT -> {
+                    MagiskInstaller.SecondSlot(installer, outItems, logItems).exec()
+                }
+                Const.Value.PATCH_FILE -> {
+                    uri ?: return@launch
+                    showReboot = false
+                    MagiskInstaller.Patch(installer, uri, outItems, logItems).exec()
+                }
+                else -> {
+                    back()
+                    return@launch
                 }
             }
-            file.path
+            onResult(result)
         }
-        .subscribeK { SnackbarEvent(it).publish() }
-        .add()
+    }
+
+    private fun onResult(success: Boolean) {
+        state = if (success) State.LOADED else State.LOADING_FAILED
+        behaviorText = when {
+            success -> resources.getString(R.string.done)
+            else -> resources.getString(R.string.failure)
+        }
+    }
+
+    fun onMenuItemClicked(item: MenuItem): Boolean {
+        when (item.itemId) {
+            R.id.action_save -> savePressed()
+        }
+        return true
+    }
+
+    private fun savePressed() = withExternalRW {
+        viewModelScope.launch {
+            val name = Const.MAGISK_INSTALL_LOG_FILENAME.format(now.toTime(timeFormatStandard))
+            val file = File(Config.downloadDirectory, name)
+            withContext(Dispatchers.IO) {
+                file.bufferedWriter().use { writer ->
+                    logItems.forEach {
+                        writer.write(it)
+                        writer.newLine()
+                    }
+                }
+            }
+            SnackbarEvent(file.path).publish()
+        }
+    }
 
     fun restartPressed() = reboot()
-
-    fun backPressed() = back()
-
 }

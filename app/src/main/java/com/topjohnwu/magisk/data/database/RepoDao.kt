@@ -1,11 +1,21 @@
 package com.topjohnwu.magisk.data.database
 
 import androidx.room.*
-import com.topjohnwu.magisk.Config
-import com.topjohnwu.magisk.model.entity.module.Repo
+import com.topjohnwu.magisk.core.Config
+import com.topjohnwu.magisk.core.model.module.Repo
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+@Database(version = 6, entities = [Repo::class, RepoEtag::class], exportSchema = false)
+abstract class RepoDatabase : RoomDatabase() {
+
+    abstract fun repoDao() : RepoDao
+    abstract fun repoByUpdatedDao(): RepoByUpdatedDao
+    abstract fun repoByNameDao(): RepoByNameDao
+}
 
 @Dao
-abstract class RepoDao {
+abstract class RepoDao(private val db: RepoDatabase) {
 
     val repoIDList get() = getRepoID().map { it.id }
 
@@ -15,13 +25,10 @@ abstract class RepoDao {
         }
 
     var etagKey: String
-        set(etag) = addEtagRaw(RepoEtag(0, etag))
+        set(value) = addEtagRaw(RepoEtag(0, value))
         get() = etagRaw()?.key.orEmpty()
 
-    fun clear() {
-        clearRepos()
-        clearEtag()
-    }
+    suspend fun clear() = withContext(Dispatchers.IO) { db.clearAllTables() }
 
     @Query("SELECT * FROM repos ORDER BY last_update DESC")
     protected abstract fun getReposDateOrder(): List<Repo>
@@ -52,12 +59,6 @@ abstract class RepoDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     protected abstract fun addEtagRaw(etag: RepoEtag)
-
-    @Query("DELETE FROM repos")
-    protected abstract fun clearRepos()
-
-    @Query("DELETE FROM etag")
-    protected abstract fun clearEtag()
 }
 
 data class RepoID(

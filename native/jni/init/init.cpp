@@ -1,17 +1,14 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/sysmacros.h>
-#include <stdio.h>
-#include <string.h>
 #include <fcntl.h>
 #include <libgen.h>
 #include <vector>
 
 #include <xz.h>
-#include <magisk.h>
-#include <cpio.h>
-#include <utils.h>
-#include <flags.h>
+#include <magisk.hpp>
+#include <cpio.hpp>
+#include <utils.hpp>
 
 #include "binaries.h"
 #ifdef USE_64BIT
@@ -20,55 +17,24 @@
 #include "binaries_arch.h"
 #endif
 
-#include "init.h"
+#include "init.hpp"
 
 using namespace std;
 
-constexpr const char *init_applet[] =
-		{ "magiskpolicy", "supolicy", "magisk", nullptr };
 constexpr int (*init_applet_main[])(int, char *[]) =
-		{ magiskpolicy_main, magiskpolicy_main, magisk_proxy_main, nullptr };
-
-#ifdef MAGISK_DEBUG
-static FILE *kmsg;
-static int vprintk(const char *fmt, va_list ap) {
-	fprintf(kmsg, "magiskinit: ");
-	return vfprintf(kmsg, fmt, ap);
-}
-static void setup_klog() {
-	mknod("/kmsg", S_IFCHR | 0666, makedev(1, 11));
-	int fd = xopen("/kmsg", O_WRONLY | O_CLOEXEC);
-	kmsg = fdopen(fd, "w");
-	setbuf(kmsg, nullptr);
-	unlink("/kmsg");
-	log_cb.d = log_cb.i = log_cb.w = log_cb.e = vprintk;
-	log_cb.ex = nop_ex;
-
-	// Prevent file descriptor confusion
-	mknod("/null", S_IFCHR | 0666, makedev(1, 3));
-	int null = xopen("/null", O_RDWR | O_CLOEXEC);
-	unlink("/null");
-	xdup3(null, STDIN_FILENO, O_CLOEXEC);
-	xdup3(null, STDOUT_FILENO, O_CLOEXEC);
-	xdup3(null, STDERR_FILENO, O_CLOEXEC);
-	if (null > STDERR_FILENO)
-		close(null);
-}
-#else
-#define setup_klog(...)
-#endif
+		{ magiskpolicy_main, magiskpolicy_main, nullptr };
 
 static bool unxz(int fd, const uint8_t *buf, size_t size) {
 	uint8_t out[8192];
 	xz_crc32_init();
 	struct xz_dec *dec = xz_dec_init(XZ_DYNALLOC, 1 << 26);
 	struct xz_buf b = {
-			.in = buf,
-			.in_pos = 0,
-			.in_size = size,
-			.out = out,
-			.out_pos = 0,
-			.out_size = sizeof(out)
+		.in = buf,
+		.in_pos = 0,
+		.in_size = size,
+		.out = out,
+		.out_pos = 0,
+		.out_size = sizeof(out)
 	};
 	enum xz_ret ret;
 	do {
@@ -90,7 +56,7 @@ static void decompress_ramdisk() {
 	uint8_t *buf;
 	size_t sz;
 	mmap_ro(ramdisk_xz, buf, sz);
-	int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC);
+	int fd = xopen(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
 	unxz(fd, buf, sz);
 	munmap(buf, sz);
 	close(fd);
@@ -101,7 +67,7 @@ static void decompress_ramdisk() {
 }
 
 int dump_magisk(const char *path, mode_t mode) {
-	int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, mode);
+	int fd = xopen(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, mode);
 	if (fd < 0)
 		return 1;
 	if (!unxz(fd, magisk_xz, sizeof(magisk_xz)))
@@ -111,7 +77,7 @@ int dump_magisk(const char *path, mode_t mode) {
 }
 
 static int dump_manager(const char *path, mode_t mode) {
-	int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, mode);
+	int fd = xopen(path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, mode);
 	if (fd < 0)
 		return 1;
 	if (!unxz(fd, manager_xz, sizeof(manager_xz)))
@@ -131,17 +97,15 @@ public:
 	}
 };
 
-class TestInit : public SARInit {
+class TestInit : public BaseInit {
 public:
-	TestInit(char *argv[], cmdline *cmd) : SARInit(argv, cmd) {};
+	TestInit(char *argv[], cmdline *cmd) : BaseInit(argv, cmd) {};
 	void start() override {
-		early_mount();
-		patch_rootdir();
-		cleanup();
+		// Place init tests here
 	}
 };
 
-static void setup_test(const char *dir) {
+[[maybe_unused]] static int test_main(int argc, char *argv[]) {
 	// Log to console
 	cmdline_logging();
 	log_cb.ex = nop_ex;
@@ -157,70 +121,76 @@ static void setup_test(const char *dir) {
 			mounts.emplace_back(me->mnt_dir);
 		return true;
 	});
-	for (auto m = mounts.rbegin(); m != mounts.rend(); ++m)
-		xumount(m->data());
+	for (auto &m : reversed(mounts))
+		xumount(m.data());
 
 	// chroot jail
-	chdir(dir);
+	chdir(dirname(argv[0]));
 	chroot(".");
 	chdir("/");
+
+	cmdline cmd{};
+	load_kernel_info(&cmd);
+
+	auto init = make_unique<TestInit>(argv, &cmd);
+	init->start();
+
+	return 1;
 }
 
 int main(int argc, char *argv[]) {
 	umask(0);
 
+	auto name = basename(argv[0]);
+	if (name == "magisk"sv)
+		return magisk_proxy_main(argc, argv);
 	for (int i = 0; init_applet[i]; ++i) {
-		if (strcmp(basename(argv[0]), init_applet[i]) == 0)
+		if (strcmp(name, init_applet[i]) == 0)
 			return (*init_applet_main[i])(argc, argv);
 	}
 
-	if (argc > 1 && strcmp(argv[1], "-x") == 0) {
-		if (strcmp(argv[2], "magisk") == 0)
+#if 0
+	if (getenv("INIT_TEST") != nullptr)
+		return test_main(argc, argv);
+#endif
+
+	if (argc > 1 && argv[1] == "-x"sv) {
+		if (argv[2] == "magisk"sv)
 			return dump_magisk(argv[3], 0755);
-		else if (strcmp(argv[2], "manager") == 0)
+		else if (argv[2] == "manager"sv)
 			return dump_manager(argv[3], 0644);
 	}
 
-	if (argc > 1 && argv[1] == "selinux_setup"sv) {
-		auto init = make_unique<SecondStageInit>(argv);
-		init->start();
-	}
+	if (getpid() != 1)
+		return 1;
 
-#ifdef MAGISK_DEBUG
-	bool run_test = getenv("INIT_TEST") != nullptr;
-#else
-	constexpr bool run_test = false;
-#endif
-
-	if (run_test) {
-		setup_test(dirname(argv[0]));
-	} else {
-		if (getpid() != 1)
-			return 1;
-		setup_klog();
-	}
-
+	BaseInit *init;
 	cmdline cmd{};
-	load_kernel_info(&cmd);
 
-	unique_ptr<BaseInit> init;
-	if (run_test) {
-		init = make_unique<TestInit>(argv, &cmd);
-	} else if (cmd.force_normal_boot) {
-		init = make_unique<ABFirstStageInit>(argv, &cmd);
-	} else if (cmd.system_as_root) {
-		if (access("/overlay", F_OK) == 0)  /* Compatible mode */
-			init = make_unique<SARCompatInit>(argv, &cmd);
-		else
-			init = make_unique<SARInit>(argv, &cmd);
+	if (argc > 1 && argv[1] == "selinux_setup"sv) {
+		setup_klog();
+		init = new SecondStageInit(argv);
 	} else {
-		decompress_ramdisk();
-		if (access("/sbin/recovery", F_OK) == 0)
-			init = make_unique<RecoveryInit>(argv, &cmd);
-		else if (access("/apex", F_OK) == 0)
-			init = make_unique<AFirstStageInit>(argv, &cmd);
-		else
-			init = make_unique<RootFSInit>(argv, &cmd);
+		// This will also mount /sys and /proc
+		load_kernel_info(&cmd);
+
+		bool two_stage = access("/apex", F_OK) == 0;
+		if (cmd.skip_initramfs) {
+			if (two_stage)
+				init = new SARFirstStageInit(argv, &cmd);
+			else
+				init = new SARInit(argv, &cmd);
+		} else {
+			decompress_ramdisk();
+			if (cmd.force_normal_boot)
+				init = new FirstStageInit(argv, &cmd);
+			else if (access("/sbin/recovery", F_OK) == 0 || access("/system/bin/recovery", F_OK) == 0)
+				init = new RecoveryInit(argv, &cmd);
+			else if (two_stage)
+				init = new FirstStageInit(argv, &cmd);
+			else
+				init = new RootFSInit(argv, &cmd);
+		}
 	}
 
 	// Run the main routine

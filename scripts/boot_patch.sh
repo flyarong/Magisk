@@ -1,5 +1,5 @@
 #!/system/bin/sh
-##########################################################################################
+###########################################################################################
 #
 # Magisk Boot Image Patcher
 # by topjohnwu
@@ -13,25 +13,21 @@
 #
 # File name          Type      Description
 #
-# boot_patch.sh      script    A script to patch boot. Expect path to boot image as parameter.
+# boot_patch.sh      script    A script to patch boot image for Magisk.
 #                  (this file) The script will use binaries and files in its same directory
 #                              to complete the patching process
-# util_functions.sh  script    A script which hosts all functions requires for this script
+# util_functions.sh  script    A script which hosts all functions required for this script
 #                              to work properly
-# magiskinit         binary    The binary to replace /init, which has the magisk binary embedded
-# magiskboot         binary    A tool to unpack boot image, decompress ramdisk, extract ramdisk,
-#                              and patch the ramdisk for Magisk support
-# chromeos           folder    This folder should store all the utilities and keys to sign
-#                  (optional)  a chromeos device. Used for Pixel C
+# magiskinit         binary    The binary to replace /init; magisk binary embedded
+# magiskboot         binary    A tool to manipulate boot images
+# chromeos           folder    This folder includes all the utilities and keys to sign
+#                  (optional)  chromeos boot images. Currently only used for Pixel C
 #
-# If the script is not running as root, then the input boot image should be a stock image
-# or have a backup included in ramdisk internally, since we cannot access the stock boot
-# image placed under /data we've created when previously installed
-#
-##########################################################################################
-##########################################################################################
+###########################################################################################
+
+############
 # Functions
-##########################################################################################
+############
 
 # Pure bash dirname implementation
 getdir() {
@@ -41,9 +37,9 @@ getdir() {
   esac
 }
 
-##########################################################################################
+#################
 # Initialization
-##########################################################################################
+#################
 
 if [ -z $SOURCEDMODE ]; then
   # Switch to the location of the script file
@@ -67,9 +63,9 @@ chmod -R 755 .
 # Extract magisk if doesn't exist
 [ -e magisk ] || ./magiskinit -x magisk magisk
 
-##########################################################################################
+#########
 # Unpack
-##########################################################################################
+#########
 
 CHROMEOS=false
 
@@ -88,9 +84,9 @@ esac
 
 [ -f recovery_dtbo ] && RECOVERYMODE=true
 
-##########################################################################################
-# Ramdisk restores
-##########################################################################################
+###################
+# Ramdisk Restores
+###################
 
 # Test patch status and do restore
 ui_print "- Checking ramdisk status"
@@ -104,10 +100,8 @@ fi
 case $((STATUS & 3)) in
   0 )  # Stock boot
     ui_print "- Stock boot image detected"
-    ui_print "- Backing up stock boot image"
     SHA1=`./magiskboot sha1 "$BOOTIMAGE" 2>/dev/null`
-    STOCKDUMP=stock_boot_${SHA1}.img.gz
-    ./magiskboot compress "$BOOTIMAGE" $STOCKDUMP
+    cat $BOOTIMAGE > stock_boot.img
     cp -af ramdisk.cpio ramdisk.cpio.orig 2>/dev/null
     ;;
   1 )  # Magisk patched
@@ -123,14 +117,9 @@ case $((STATUS & 3)) in
     ;;
 esac
 
-if [ $((STATUS & 8)) -ne 0 ]; then
-  # Possibly using 2SI, export env var
-  export TWOSTAGEINIT=true
-fi
-
-##########################################################################################
-# Ramdisk patches
-##########################################################################################
+##################
+# Ramdisk Patches
+##################
 
 ui_print "- Patching ramdisk"
 
@@ -153,12 +142,12 @@ fi
 
 rm -f ramdisk.cpio.orig config
 
-##########################################################################################
-# Binary patches
-##########################################################################################
+#################
+# Binary Patches
+#################
 
 for dt in dtb kernel_dtb extra recovery_dtbo; do
-  [ -f $dt ] && ./magiskboot dtb $dt patch && ui_print "- Patching fstab in $dt"
+  [ -f $dt ] && ./magiskboot dtb $dt patch && ui_print "- Patch fstab in $dt"
 done
 
 if [ -f kernel ]; then
@@ -179,9 +168,9 @@ if [ -f kernel ]; then
   77616E745F696E697472616D667300
 fi
 
-##########################################################################################
-# Repack and flash
-##########################################################################################
+#################
+# Repack & Flash
+#################
 
 ui_print "- Repacking boot image"
 ./magiskboot repack "$BOOTIMAGE" || abort "! Unable to repack boot image!"

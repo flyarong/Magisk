@@ -16,29 +16,36 @@
 #   public *;
 #}
 
+# Kotlin
+-assumenosideeffects class kotlin.jvm.internal.Intrinsics {
+	public static void checkExpressionValueIsNotNull(...);
+	public static void checkNotNullExpressionValue(...);
+	public static void checkReturnedValueIsNotNull(...);
+	public static void checkFieldIsNotNull(...);
+	public static void checkParameterIsNotNull(...);
+}
+
+# Stubs
+-keep class a.* { *; }
+
 # Snet
--keepclassmembers class com.topjohnwu.magisk.utils.SafetyNetHelper { *; }
--keep,allowobfuscation interface com.topjohnwu.magisk.utils.SafetyNetHelper$Callback
--keepclassmembers class * implements com.topjohnwu.magisk.utils.SafetyNetHelper$Callback {
+-keepclassmembers class com.topjohnwu.magisk.core.utils.SafetyNetHelper { *; }
+-keep,allowobfuscation interface com.topjohnwu.magisk.core.utils.SafetyNetHelper$Callback
+-keepclassmembers class * implements com.topjohnwu.magisk.core.utils.SafetyNetHelper$Callback {
   void onResponse(int);
 }
 
-# Keep all fragment constructors
--keepclassmembers class * extends androidx.fragment.app.Fragment {
-  public <init>(...);
+# Fragments
+-keep,allowobfuscation class * extends androidx.fragment.app.Fragment
+
+# Strip Timber verbose and debug logging
+-assumenosideeffects class timber.log.Timber.Tree {
+  public void v(**);
+  public void d(**);
 }
 
-# DelegateWorker
--keep,allowobfuscation class * extends com.topjohnwu.magisk.base.DelegateWorker
-
-# BootSigner
--keepclassmembers class com.topjohnwu.signing.BootSigner { *; }
-
-# Strip logging
--assumenosideeffects class timber.log.Timber.Tree { *; }
-
 # Excessive obfuscation
--repackageclasses 'a'
+-repackageclasses
 -allowaccessmodification
 
 # QOL

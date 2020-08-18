@@ -1,14 +1,46 @@
-##########################################################################################
+#!/sbin/sh
+# ADDOND_VERSION=2
+########################################################
 #
 # Magisk Survival Script for ROMs with addon.d support
-# by topjohnwu
+# by topjohnwu and osm0sis
 #
-# Inspired by 99-flashafterupdate.sh of osm0sis @ xda-developers
-#
-##########################################################################################
+########################################################
+
+trampoline() {
+  mount /data 2>/dev/null
+  if [ -f $MAGISKBIN/addon.d.sh ]; then
+    exec sh $MAGISKBIN/addon.d.sh "$@"
+    exit $?
+  elif [ "$1" = post-restore ]; then
+    ps | grep zygote | grep -v grep >/dev/null && BOOTMODE=true || BOOTMODE=false
+    $BOOTMODE || ps -A 2>/dev/null | grep zygote | grep -v grep >/dev/null && BOOTMODE=true
+
+    if ! $BOOTMODE; then
+      # update-binary|updater <RECOVERY_API_VERSION> <OUTFD> <ZIPFILE>
+      OUTFD=$(ps | grep -v 'grep' | grep -oE 'update(.*) 3 [0-9]+' | cut -d" " -f3)
+      [ -z $OUTFD ] && OUTFD=$(ps -Af | grep -v 'grep' | grep -oE 'update(.*) 3 [0-9]+' | cut -d" " -f3)
+      # update_engine_sideload --payload=file://<ZIPFILE> --offset=<OFFSET> --headers=<HEADERS> --status_fd=<OUTFD>
+      [ -z $OUTFD ] && OUTFD=$(ps | grep -v 'grep' | grep -oE 'status_fd=[0-9]+' | cut -d= -f2)
+      [ -z $OUTFD ] && OUTFD=$(ps -Af | grep -v 'grep' | grep -oE 'status_fd=[0-9]+' | cut -d= -f2)
+    fi
+    ui_print() { $BOOTMODE && log -t Magisk -- "$1" || echo -e "ui_print $1\nui_print" >> /proc/self/fd/$OUTFD; }
+
+    ui_print "***********************"
+    ui_print " Magisk addon.d failed"
+    ui_print "***********************"
+    ui_print "! Cannot find Magisk binaries - was data wiped or not decrypted?"
+    ui_print "! Reflash OTA from decrypted recovery or reflash Magisk"
+  fi
+  exit 1
+}
+
+# Always use the script in /data
+MAGISKBIN=/data/adb/magisk
+[ "$0" = $MAGISKBIN/addon.d.sh ] || trampoline "$@"
 
 V1_FUNCS=/tmp/backuptool.functions
-V2_FUNCS=/postinstall/system/bin/backuptool_ab.functions
+V2_FUNCS=/postinstall/tmp/backuptool.functions
 
 if [ -f $V1_FUNCS ]; then
   . $V1_FUNCS
@@ -20,77 +52,15 @@ else
 fi
 
 initialize() {
-  # This path should work in any cases
-  TMPDIR=/dev/tmp
-
-  mount /data 2>/dev/null
-
-  MAGISKBIN=/data/adb/magisk
-  if [ ! -d $MAGISKBIN ]; then
-    echo "! Cannot find Magisk binaries!"
-    exit 1
-  fi
-
   # Load utility functions
   . $MAGISKBIN/util_functions.sh
 
   if $BOOTMODE; then
     # Override ui_print when booted
     ui_print() { log -t Magisk -- "$1"; }
-  else
-    OUTFD=
-    setup_flashable
   fi
-}
-
-show_logo() {
-  ui_print "************************"
-  ui_print "* Magisk v$MAGISK_VER addon.d"
-  ui_print "************************"
-}
-
-installation() {
-  find_manager_apk
-  get_flags
-  find_boot_image
-  find_dtbo_image
-  [ -z $BOOTIMAGE ] && abort "! Unable to detect target image"
-  ui_print "- Target image: $BOOTIMAGE"
-  [ -z $DTBOIMAGE ] || ui_print "- DTBO image: $DTBOIMAGE"
-
-  remove_system_su
-
-  [ -f $APK ] && eval $BOOTSIGNER -verify < $BOOTIMAGE && BOOTSIGNED=true
-  $BOOTSIGNED && ui_print "- Boot image is signed with AVB 1.0"
-
-  SOURCEDMODE=true
-  cd $MAGISKBIN
-
-  # Source the boot patcher
-  . ./boot_patch.sh "$BOOTIMAGE"
-
-  ui_print "- Flashing new boot image"
-  flash_image new-boot.img "$BOOTIMAGE" || abort "! Insufficient partition size"
-  rm -f new-boot.img
-
-  if [ -f stock_boot* ]; then
-    rm -f /data/stock_boot* 2>/dev/null
-    $DATA && mv stock_boot* /data
-  fi
-
-  $KEEPVERITY || patch_dtbo_image
-
-  if [ -f stock_dtbo* ]; then
-    rm -f /data/stock_dtbo* 2>/dev/null
-    $DATA && mv stock_dtbo* /data
-  fi
-
-  cd /
-}
-
-finalize() {
-  ui_print "- Done"
-  exit 0
+  OUTFD=
+  setup_flashable
 }
 
 main() {
@@ -98,16 +68,44 @@ main() {
     # Wait for post addon.d-v1 processes to finish
     sleep 5
   fi
+
+  # Ensure we aren't in /tmp/addon.d anymore (since it's been deleted by addon.d)
+  cd $TMPDIR
+
   $BOOTMODE || recovery_actions
-  show_logo
+
+  if echo $MAGISK_VER | grep -q '\.'; then
+    PRETTY_VER=$MAGISK_VER
+  else
+    PRETTY_VER="$MAGISK_VER($MAGISK_VER_CODE)"
+  fi
+  print_title "Magisk $PRETTY_VER addon.d"
+
   mount_partitions
+  check_data
+  get_flags
+
   if $backuptool_ab; then
     # Swap the slot for addon.d-v2
     if [ ! -z $SLOT ]; then [ $SLOT = _a ] && SLOT=_b || SLOT=_a; fi
   fi
-  installation
+
+  find_boot_image
+
+  [ -z $BOOTIMAGE ] && abort "! Unable to detect target image"
+  ui_print "- Target image: $BOOTIMAGE"
+
+  remove_system_su
+  find_manager_apk
+  install_magisk
+
+  # Cleanups
+  cd /
   $BOOTMODE || recovery_cleanup
-  finalize
+  rm -rf $TMPDIR
+
+  ui_print "- Done"
+  exit 0
 }
 
 case "$1" in

@@ -1,52 +1,71 @@
 package com.topjohnwu.magisk.model.entity.recycler
 
 import android.graphics.drawable.Drawable
+import androidx.databinding.Bindable
+import com.topjohnwu.magisk.BR
 import com.topjohnwu.magisk.R
-import com.topjohnwu.magisk.databinding.ComparableRvItem
-import com.topjohnwu.magisk.extensions.addOnPropertyChangedCallback
-import com.topjohnwu.magisk.extensions.inject
-import com.topjohnwu.magisk.extensions.toggle
-import com.topjohnwu.magisk.model.entity.MagiskPolicy
-import com.topjohnwu.magisk.model.events.PolicyEnableEvent
-import com.topjohnwu.magisk.model.events.PolicyUpdateEvent
-import com.topjohnwu.magisk.utils.KObservableField
-import com.topjohnwu.magisk.utils.RxBus
+import com.topjohnwu.magisk.core.model.MagiskPolicy
+import com.topjohnwu.magisk.databinding.ObservableItem
+import com.topjohnwu.magisk.ui.superuser.SuperuserViewModel
+import com.topjohnwu.magisk.utils.set
 
-class PolicyRvItem(val item: MagiskPolicy, val icon: Drawable) : ComparableRvItem<PolicyRvItem>() {
+class PolicyItem(
+    val item: MagiskPolicy,
+    val icon: Drawable,
+    val viewModel: SuperuserViewModel
+) : ObservableItem<PolicyItem>() {
+    override val layoutRes = R.layout.item_policy_md2
 
-    override val layoutRes: Int = R.layout.item_policy
+    @get:Bindable
+    var isExpanded = false
+        set(value) = set(value, field, { field = it }, BR.expanded)
 
-    val isExpanded = KObservableField(false)
-    val isEnabled = KObservableField(item.policy == MagiskPolicy.ALLOW)
-    val shouldNotify = KObservableField(item.notification)
-    val shouldLog = KObservableField(item.logging)
+    // This property hosts the policy state
+    var policyState = item.policy == MagiskPolicy.ALLOW
+        set(value) = set(value, field, { field = it }, BR.enabled)
 
-    fun toggle() = isExpanded.toggle()
+    // This property binds with the UI state
+    @get:Bindable
+    var isEnabled
+        get() = policyState
+        set(value) = set(value, policyState, { viewModel.togglePolicy(this, it) }, BR.enabled)
 
-    private val rxBus: RxBus by inject()
+    @get:Bindable
+    var shouldNotify = item.notification
+        set(value) = set(value, field, { field = it }, BR.shouldNotify) {
+            viewModel.updatePolicy(updatedPolicy, isLogging = false)
+        }
 
-    private val currentStateItem
+    @get:Bindable
+    var shouldLog = item.logging
+        set(value) = set(value, field, { field = it }, BR.shouldLog) {
+            viewModel.updatePolicy(updatedPolicy, isLogging = true)
+        }
+
+    private val updatedPolicy
         get() = item.copy(
-            policy = if (isEnabled.value) MagiskPolicy.ALLOW else MagiskPolicy.DENY,
-            notification = shouldNotify.value,
-            logging = shouldLog.value
+            policy = if (policyState) MagiskPolicy.ALLOW else MagiskPolicy.DENY,
+            notification = shouldNotify,
+            logging = shouldLog
         )
 
-    init {
-        isEnabled.addOnPropertyChangedCallback {
-            it ?: return@addOnPropertyChangedCallback
-            rxBus.post(PolicyEnableEvent(this@PolicyRvItem, it))
-        }
-        shouldNotify.addOnPropertyChangedCallback {
-            it ?: return@addOnPropertyChangedCallback
-            rxBus.post(PolicyUpdateEvent.Notification(currentStateItem))
-        }
-        shouldLog.addOnPropertyChangedCallback {
-            it ?: return@addOnPropertyChangedCallback
-            rxBus.post(PolicyUpdateEvent.Log(currentStateItem))
-        }
+    fun toggleExpand() {
+        isExpanded = !isExpanded
     }
 
-    override fun contentSameAs(other: PolicyRvItem): Boolean = itemSameAs(other)
-    override fun itemSameAs(other: PolicyRvItem): Boolean = item.uid == other.item.uid
+    fun toggleNotify() {
+        shouldNotify = !shouldNotify
+    }
+
+    fun toggleLog() {
+        shouldLog = !shouldLog
+    }
+
+    fun revoke() {
+        viewModel.deletePressed(this)
+    }
+
+    override fun contentSameAs(other: PolicyItem) = itemSameAs(other)
+    override fun itemSameAs(other: PolicyItem) = item.uid == other.item.uid
+
 }

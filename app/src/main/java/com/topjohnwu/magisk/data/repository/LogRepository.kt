@@ -1,40 +1,41 @@
 package com.topjohnwu.magisk.data.repository
 
-import com.topjohnwu.magisk.Const
-import com.topjohnwu.magisk.data.database.LogDao
-import com.topjohnwu.magisk.data.database.base.suRaw
-import com.topjohnwu.magisk.extensions.toSingle
+import com.topjohnwu.magisk.core.Const
+import com.topjohnwu.magisk.data.database.SuLogDao
+import com.topjohnwu.magisk.ktx.await
 import com.topjohnwu.magisk.model.entity.MagiskLog
-import com.topjohnwu.magisk.model.entity.WrappedMagiskLog
 import com.topjohnwu.superuser.Shell
-import java.util.concurrent.TimeUnit
 
 
 class LogRepository(
-    private val logDao: LogDao
+    private val logDao: SuLogDao
 ) {
 
-    fun fetchLogs() = logDao.fetchAll()
-        .map { it.sortByDescending { it.date.time }; it }
-        .map { it.wrap() }
+    suspend fun fetchSuLogs() = logDao.fetchAll()
 
-    fun fetchMagiskLogs() = "tail -n 5000 ${Const.MAGISK_LOG}".suRaw()
-        .filter { it.isNotEmpty() }
-
-    fun clearLogs() = logDao.deleteAll()
-    fun clearOutdated() = logDao.deleteOutdated()
-
-    fun clearMagiskLogs() = Shell.su("echo -n > " + Const.MAGISK_LOG)
-        .toSingle()
-        .map { it.exec() }
-
-    fun put(log: MagiskLog) = logDao.put(log)
-
-    private fun List<MagiskLog>.wrap(): List<WrappedMagiskLog> {
-        val day = TimeUnit.DAYS.toMillis(1)
-        return groupBy { it.date.time / day }
-            .map { WrappedMagiskLog(it.key * day, it.value) }
+    suspend fun fetchMagiskLogs(): String {
+        val list = object : AbstractMutableList<String>() {
+            val buf = StringBuilder()
+            override val size get() = 0
+            override fun get(index: Int): String = ""
+            override fun removeAt(index: Int): String = ""
+            override fun set(index: Int, element: String): String = ""
+            override fun add(index: Int, element: String) {
+                if (element.isNotEmpty()) {
+                    buf.append(element)
+                    buf.append('\n')
+                }
+            }
+        }
+        Shell.su("cat ${Const.MAGISK_LOG}").to(list).await()
+        return list.buf.toString()
     }
 
+    suspend fun clearLogs() = logDao.deleteAll()
+
+    fun clearMagiskLogs(cb: (Shell.Result) -> Unit) =
+        Shell.su("echo -n > ${Const.MAGISK_LOG}").submit(cb)
+
+    suspend fun insert(log: MagiskLog) = logDao.insert(log)
 
 }
